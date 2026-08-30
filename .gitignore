@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# local artifacts
+*.gpg
+
+# node (if npm is used)
+node_modules/
+
+# editor
+*.swp

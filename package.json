@@ -7,19 +7,16 @@
   },
   "files": [
     "scripts/forklift",
-    "scripts/postinstall.js",
     "commands/forklift.md",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
-  "scripts": {
-    "postinstall": "node scripts/postinstall.js"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pixincreate/forklift.git"
   },
   "homepage": "https://github.com/pixincreate/forklift",
-  "license": "MIT",
+  "license": "CC0-1.0",
   "engines": {
     "node": ">=16"
   },

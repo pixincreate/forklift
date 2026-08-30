@@ -59,11 +59,18 @@ never transmitted. Set the same secret on both machines.
 
 ### command install (optional)
 
-By default the installer also drops the `/forklift` OpenCode command. If you
-manage commands yourself (e.g. through `skillset` + `capsync`), skip it:
+By default the installer also drops the `/forklift` OpenCode command into
+`~/.config/opencode/commands`. If you manage commands yourself (e.g. through
+`skillset` + `capsync`), skip it with `--no-command`:
 
 ```sh
-FORKLIFT_INSTALL_COMMAND=0 bash scripts/install.sh --clone
+bash scripts/install.sh --clone --no-command
+```
+
+or set it once in `~/.config/forklift/forklift.conf`:
+
+```
+FORKLIFT_INSTALL_COMMAND=0
 ```
 
 To install into several harness command dirs at once, add a list to
@@ -72,8 +79,6 @@ To install into several harness command dirs at once, add a list to
 ```
 FORKLIFT_COMMAND_PATHS="/home/you/.config/opencode/commands /home/you/.claude/commands"
 ```
-
-`forklift init` preserves this line on re-run.
 
 ## usage
 
