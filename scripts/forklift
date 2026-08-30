@@ -351,7 +351,7 @@ cmd_search() {
   case "$sel" in
     ''|*[!0-9]*) die "invalid selection";;
   esac
-  [ "$sel" -ge 1 ] && [ "$sel" -le "$n" ] || die "selection out of range"
+  if [ "$sel" -lt 1 ] || [ "$sel" -gt "$n" ]; then die "selection out of range"; fi
   cmd_receive "${tokens[$sel]}" "$harness"
 }
 
