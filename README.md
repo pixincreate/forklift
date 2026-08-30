@@ -48,14 +48,14 @@ This clones the repo to `~/.local/share/forklift/repo`, symlinks `forklift` to
 Then configure the inbox once per machine:
 
 ```sh
-forklift init          # gist is the default; prompts for a salt
+forklift init          # gist is the default; prompts for a secret
 ```
 
 `forklift init` picks GitHub Gist by default (uses your already-authed `gh`).
 You can instead point `FORKLIFT_INBOX_REPO` at a private `owner/name` GitHub
-repo or any git URL. It also asks for a **salt** — a local-only string mixed
+repo or any git URL. It also asks for a **secret** — a local-only string mixed
 into the encryption key, stored only in `~/.config/forklift/forklift.conf` and
-never transmitted. Set the same salt on both machines.
+never transmitted. Set the same secret on both machines.
 
 ### command install (optional)
 

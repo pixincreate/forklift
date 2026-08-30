@@ -3,9 +3,9 @@
 #
 # Transport: an inbox holds a gpg-encrypted txcript "Simple" document.
 # Default inbox = GitHub Gist (secret by default, no repo). A local-only
-# FORKLIFT_SALT (set in forklift.conf during `init`) is mixed into the gpg
+# FORKLIFT_SECRET (set in forklift.conf during `init`) is mixed into the gpg
 # passphrase so the inbox alone cannot decrypt a blob. The code you carry is
-# the locator; the salt never leaves your machine.
+# the locator; the secret never leaves your machine.
 #
 # Nothing is written to disk in plaintext: the export is piped straight into
 # gpg and straight into the inbox (gh API / git / gist). On receive the blob is
@@ -26,7 +26,7 @@ die() { echo "forklift: $*" >&2; exit 1; }
 #   unset / "gist"        -> GitHub Gist (default; no repo, secret by default)
 #   owner/name            -> GitHub repo via the gh API
 #   any git URL           -> any git remote (self-hosted, no GitHub)
-# A local-only FORKLIFT_SALT (set during `init`) is mixed into the gpg
+# A local-only FORKLIFT_SECRET (set during `init`) is mixed into the gpg
 # passphrase so the inbox alone cannot decrypt a blob without it.
 load_config() {
   # shellcheck disable=SC1090  # config path is dynamic by design
@@ -67,13 +67,13 @@ ensure_repo() {
   [ -n "${FORKLIFT_INBOX_REPO:-}" ] || die "no inbox repo configured - run: forklift init"
 }
 
-# gpg passphrase = the per-blob token, mixed with the local-only salt.
-passphrase_for() { printf '%s%s' "$1" "${FORKLIFT_SALT:-}"; }
+# gpg passphrase = the per-blob token, mixed with the local-only secret.
+passphrase_for() { printf '%s%s' "$1" "${FORKLIFT_SECRET:-${FORKLIFT_SALT:-}}"; }
 
 init() {
   mkdir -p "$CONFIG_DIR"
   load_config
-  local repo="${FORKLIFT_INBOX_REPO:-}" salt=""
+  local repo="${FORKLIFT_INBOX_REPO:-}" secret=""
   if [ -z "$repo" ] || [ "$repo" = "gist" ]; then
     gh auth status >/dev/null 2>&1 || die "gist backend needs 'gh' logged in - run: gh auth login"
     repo="gist"
@@ -85,12 +85,12 @@ init() {
       fi
     fi
   fi
-  printf 'Salt (optional, local-only secret so the inbox cannot decrypt without it): ' >&2
-  read -r salt
+  printf 'Secret (optional, local-only so the inbox cannot decrypt without it): ' >&2
+  read -r secret
   set_conf FORKLIFT_INBOX_REPO "$repo"
-  set_conf FORKLIFT_SALT "$salt"
+  set_conf FORKLIFT_SECRET "$secret"
   echo "forklift inbox configured: $repo"
-  [ -n "$salt" ] && echo "salt saved locally - set the SAME salt in ~/.config/forklift/forklift.conf on the other machine."
+  [ -n "$secret" ] && echo "secret saved locally - set the SAME secret in ~/.config/forklift/forklift.conf on the other machine."
 }
 
 # ---- cryptography ----------------------------------------------------------
@@ -247,7 +247,7 @@ git_list() {
 list_tokens() { if is_gh; then gh_list; else git_list; fi; }
 
 # Title stored in the encrypted payload's first line; token doubles as the
-# passphrase half (the salt makes the full passphrase).
+# passphrase half (the secret makes the full passphrase).
 blob_title() {
   local token="$1" doc meta_line
   doc="$(fetch_blob "$token" 2>/dev/null | decrypt_stream "$(passphrase_for "$token")" 2>/dev/null)" || return 1
@@ -291,7 +291,7 @@ cmd_send() {
     "$(printf '%s' "$branch" | jq -R .)" \
     "$(printf '%s' "$machine" | jq -R .)")"
   msg="$(printf 'forklift: %s (%s)' "$title" "$session_id")"
-  # export -> prepend meta line -> gpg encrypt (token + local salt) -> store. No plaintext on disk.
+  # export -> prepend meta line -> gpg encrypt (token + local secret) -> store. No plaintext on disk.
   if [ -n "$file" ]; then
     locator="$( { printf '%s\n' "$meta_json"; cat "$file"; } | encrypt_stream "$pass" | store_blob "$token" "$msg" )"
   else
@@ -377,7 +377,7 @@ usage() {
   echo "  forklift receive search <query> [<harness>]            fuzzy-search a repo/git inbox, pick a fork, receive it"
   echo ""
   echo "Inbox: GitHub Gist by default (secret). Set FORKLIFT_INBOX_REPO to owner/name"
-  echo "(gh repo) or a git URL (self-hosted). FORKLIFT_SALT in forklift.conf adds a"
+  echo "(gh repo) or a git URL (self-hosted). FORKLIFT_SECRET in forklift.conf adds a"
   echo "local-only secret so the inbox cannot decrypt a blob without it."
 }
 

@@ -3,10 +3,10 @@
 forklift's threat model is **me → me**: you are moving your own session between
 your own machines.
 
-- **Encryption:** the blob is gpg AES-256, passphrase = `TOKEN + SALT`. The
-  `TOKEN` half travels in the code; the `SALT` half lives only in
+- **Encryption:** the blob is gpg AES-256, passphrase = `TOKEN + SECRET`. The
+  `TOKEN` half travels in the code; the `SECRET` half lives only in
   `~/.config/forklift/forklift.conf` on each machine and is never uploaded. An
-  exposed gist/blob cannot be decrypted without the salt. Set the same salt on
+  exposed gist/blob cannot be decrypted without the secret. Set the same secret on
   both machines.
 - **No plaintext at rest:** the session is never written to disk unencrypted.
   It is piped export → gpg → inbox, and on receive piped inbox → gpg →

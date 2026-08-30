@@ -7,7 +7,7 @@ forklift moves a session in four steps: export, encrypt, drop, pull.
 ```
 send    txcript export <id> --from <harness>
         → prepend a one-line meta (session id + git state)
-        → gpg-encrypt with token + salt (AES-256)   → <token>.gpg
+        → gpg-encrypt with token + secret (AES-256)   → <token>.gpg
         → pushed straight into the inbox (no temp files)
 
 receive fetch the blob from the inbox
@@ -22,9 +22,9 @@ receive fetch the blob from the inbox
 - The **code** is `GID.TOKEN` (gist) or just `TOKEN` (git/github inbox).
   - `GID` is the gist id — where the blob lives.
   - `TOKEN` is one half of the gpg passphrase.
-- The other half is your local **salt** (`FORKLIFT_SALT`), which never leaves
-  the machine. Passphrase = `TOKEN + SALT`. A leaked blob is useless without
-  the salt.
+- The other half is your local **secret** (`FORKLIFT_SECRET`), which never leaves
+  the machine. Passphrase = `TOKEN + SECRET`. A leaked blob is useless without
+  the secret.
 - Nothing is written to disk in plaintext. The export is piped into gpg and into
   the inbox; `receive` pipes it back into gpg and `txcript continue -`. The only
   on-disk artifact is the encrypted ciphertext in the inbox (and, for the git
