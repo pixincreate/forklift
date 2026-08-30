@@ -25,6 +25,34 @@ It is named after a forklift on purpose: it picks up a running session, carries
 it across the room (or the continent), and sets it down somewhere else to keep
 working. The new session is a *fork* — a continuation, not a mirror.
 
+## architecture
+
+forklift moves one session as a single encrypted blob through an inbox you
+control. Two commands, one shared shape:
+
+| SEND · source machine | RECEIVE · destination machine |
+| --- | --- |
+| ai session | `forklift receive GID.TOKEN` |
+| `forklift send --from <harness>` | fetch blob + gpg decrypt |
+| `txcript export` → simple doc | compare git commit (warn if mismatch) |
+| prepend meta line (git commit, branch, machine) | `txcript continue --with <harness>` (imports → fresh fork) |
+| gpg encrypt (token + secret) | wipe inbox blob |
+| inbox: GitHub Gist (secret) | |
+
+The `GID.TOKEN` printed at send is the code you enter at receive.
+
+- **harness** is anything txcript speaks (opencode, claude_code, codex, cursor, …).
+- **token** is a random half of the gpg passphrase; **secret** is your local
+  `FORKLIFT_SECRET` (set in `forklift init`, never transmitted). The blob is
+  useless without both.
+- **inbox** defaults to a secret GitHub Gist. Swap it via `FORKLIFT_INBOX_REPO`
+  for a private `owner/name` repo or any git URL.
+- **no plaintext** is written to disk — everything is piped in memory.
+
+For the full walkthrough and the security model, see
+[docs/how-it-works.md](docs/how-it-works.md) and
+[docs/security.md](docs/security.md).
+
 ## install
 
 Prerequisites on every machine:
