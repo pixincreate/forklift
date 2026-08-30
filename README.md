@@ -34,16 +34,22 @@ Prerequisites on every machine:
 - `gh` authenticated (`gh auth login`) — the default inbox is a secret GitHub Gist; no repo to create
 - For an alternative inbox: `git` plus any git remote URL, or `owner/name` for a private GitHub repo inbox
 
-Install the CLI:
+Install the CLI — it symlinks `forklift` from this checkout into
+`~/.local/bin`, so editing the source (or `git pull`) updates the command
+instantly. No copy, no reinstall:
 
 ```sh
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/pixincreate/forklift/master/scripts/install.sh)" -- --clone
+bash scripts/install.sh
 ```
 
-This clones the repo to `~/.local/share/forklift/repo`, symlinks `forklift` to
-`~/.local/bin/`, and (unless disabled) drops the `/forklift` command file into
-`~/.config/opencode/commands`. Update later with
-`git -C ~/.local/share/forklift/repo pull`.
+On a machine without this source, clone first, then run the same:
+
+```sh
+git clone https://github.com/pixincreate/forklift.git
+cd forklift && bash scripts/install.sh
+```
+
+The installer only ever symlinks — it never copies or clones a cache.
 
 Then configure the inbox once per machine:
 
@@ -64,7 +70,7 @@ By default the installer also drops the `/forklift` OpenCode command into
 `skillset` + `capsync`), skip it with `--no-command`:
 
 ```sh
-bash scripts/install.sh --clone --no-command
+bash scripts/install.sh --no-command
 ```
 
 or set it once in `~/.config/forklift/forklift.conf`:
@@ -119,7 +125,7 @@ For the internals and the security model, see
 bash scripts/install.sh --uninstall
 ```
 
-This removes the symlinked/copied `forklift` CLI and the `/forklift` command
+This removes the symlinked `forklift` CLI and the `/forklift` command
 file. It does **not** touch your `~/.config/forklift/forklift.conf` or any
 gists you created — remove those by hand if you want them gone.
 
