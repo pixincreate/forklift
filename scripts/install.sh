@@ -24,12 +24,14 @@ Options:
   --version X   Install release version X.Y.Z (default: latest)
   -h, --help    Show this help
 
-Env overrides:
-  FORKLIFT_INSTALL_REPO       default: pixincreate/forklift
-  FORKLIFT_INSTALL_BIN_DIR    default: ~/.local/bin
-  FORKLIFT_INSTALL_OC_DIR     default: ~/.config/opencode
-  FORKLIFT_INSTALL_REPO_DIR   default: ~/.local/share/forklift/repo
-  FORKLIFT_INSTALL_CLI_SOURCE copy CLI from a local file instead of downloading
+  Env overrides:
+    FORKLIFT_INSTALL_REPO       default: pixincreate/forklift
+    FORKLIFT_INSTALL_BIN_DIR    default: ~/.local/bin
+    FORKLIFT_INSTALL_OC_DIR     default: ~/.config/opencode
+    FORKLIFT_INSTALL_REPO_DIR   default: ~/.local/share/forklift/repo
+    FORKLIFT_INSTALL_CLI_SOURCE copy CLI from a local file instead of downloading
+    FORKLIFT_INSTALL_COMMAND    set 0 to skip installing the /forklift command
+    FORKLIFT_COMMAND_PATHS      space/comma list of command dirs (default: ~/.config/opencode/commands)
 EOF
 }
 
@@ -54,7 +56,11 @@ state_dir="${FORKLIFT_INSTALL_REPO_DIR:-$home_dir/.local/share/forklift}"
 repo_dir="$state_dir/repo"
 repo_url="${FORKLIFT_INSTALL_REPO_URL:-$REPO_URL_DEFAULT}"
 bin_target="$bin_dir/forklift"
-cmd_target="$oc_cmd_dir/forklift.md"
+
+# Best-effort: read the user's forklift.conf for command-install options.
+forklift_conf="${XDG_CONFIG_HOME:-$home_dir/.config}/forklift/forklift.conf"
+# shellcheck source=/dev/null
+[ -r "$forklift_conf" ] && . "$forklift_conf" 2>/dev/null || true
 
 log() { printf '%s\n' "$*"; }
 require_command() {
@@ -64,12 +70,33 @@ require_command() {
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/scripts"
 
+# Install the /forklift command into one or more harness command dirs.
+# Opt out with FORKLIFT_INSTALL_COMMAND=0. Target dirs come from
+# FORKLIFT_COMMAND_PATHS (space/comma list); defaults to opencode's dir.
+install_commands() {
+  if [ "${FORKLIFT_INSTALL_COMMAND:-1}" = "0" ]; then
+    log "Skipping command install (FORKLIFT_INSTALL_COMMAND=0)"
+    return 0
+  fi
+  local src="${1:-}"
+  [ -f "$src" ] || src="$ROOT/commands/forklift.md"
+  [ -f "$src" ] || src="$repo_dir/commands/forklift.md"
+  [ -f "$src" ] || { log "command template not found, skipping"; return 0; }
+  local dirs="${FORKLIFT_COMMAND_PATHS:-$oc_cmd_dir}"
+  local d
+  for d in ${dirs//,/ }; do
+    [ -z "$d" ] && continue
+    mkdir -p "$d"
+    cp "$src" "$d/forklift.md"
+    log "Installed command to $d/forklift.md"
+  done
+}
+
 install_local() {
-  mkdir -p "$bin_dir" "$oc_cmd_dir"
+  mkdir -p "$bin_dir"
   install -m 0755 "$SRC/forklift" "$bin_target"
-  cp "$ROOT/commands/forklift.md" "$cmd_target"
+  install_commands
   log "Installed forklift (local copy) to $bin_target"
-  log "OpenCode command: $cmd_target"
 }
 
 install_release() {
@@ -84,9 +111,12 @@ install_release() {
     curl -fsSL "$url" -o "$bin_target"
   fi
   chmod +x "$bin_target"
+  local tmp_cmd=""
   if [[ -n "$version" ]]; then
-    curl -fsSL "https://raw.githubusercontent.com/${REPO}/v${version}/commands/forklift.md" -o "$cmd_target" || true
+    tmp_cmd="$(mktemp)"
+    curl -fsSL "https://raw.githubusercontent.com/${REPO}/v${version}/commands/forklift.md" -o "$tmp_cmd" || true
   fi
+  install_commands "${tmp_cmd:-}"
   log "Installed forklift (release) to $bin_target"
 }
 
@@ -98,17 +128,22 @@ install_clone() {
     mkdir -p "$(dirname "$repo_dir")"
     git clone "$repo_url" "$repo_dir"
   fi
-  mkdir -p "$bin_dir" "$oc_cmd_dir"
+  mkdir -p "$bin_dir"
   ln -sf "$repo_dir/scripts/forklift" "$bin_target"
-  cp "$repo_dir/commands/forklift.md" "$cmd_target"
+  install_commands
   log "Symlinked forklift to $bin_target (clone at $repo_dir)"
   log "Update later with: git -C $repo_dir pull"
 }
 
 uninstall() {
   rm -f "$bin_target"
-  rm -f "$cmd_target"
-  log "Removed $bin_target and $cmd_target"
+  rm -f "$oc_cmd_dir/forklift.md"
+  local d
+  for d in ${FORKLIFT_COMMAND_PATHS//,/ }; do
+    [ -z "$d" ] && continue
+    rm -f "$d/forklift.md"
+  done
+  log "Removed $bin_target and the /forklift command(s)"
 }
 
 latest_version() {

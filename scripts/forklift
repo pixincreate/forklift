@@ -41,6 +41,21 @@ load_config() {
   fi
 }
 
+# Upsert a key in forklift.conf, preserving all other keys (so a user's
+# FORKLIFT_COMMAND_PATHS etc. survive a re-run of `forklift init`).
+set_conf() {
+  local key="$1" val="$2"
+  mkdir -p "$CONFIG_DIR"
+  local tmp="$CONFIG_FILE.tmp"
+  if [ -f "$CONFIG_FILE" ]; then
+    grep -vE "^${key}=" "$CONFIG_FILE" > "$tmp"
+  else
+    : > "$tmp"
+  fi
+  [ -n "$val" ] && printf '%s="%s"\n' "$key" "$val" >> "$tmp"
+  mv "$tmp" "$CONFIG_FILE"
+}
+
 is_gist() { [ "${FORKLIFT_BACKEND:-gist}" = "gist" ]; }
 is_gh()   { [ "${FORKLIFT_BACKEND:-}" = "gh" ]; }
 
@@ -72,10 +87,8 @@ init() {
   fi
   printf 'Salt (optional, local-only secret so the inbox cannot decrypt without it): ' >&2
   read -r salt
-  {
-    printf 'FORKLIFT_INBOX_REPO="%s"\n' "$repo"
-    [ -n "$salt" ] && printf 'FORKLIFT_SALT="%s"\n' "$salt"
-  } > "$CONFIG_FILE"
+  set_conf FORKLIFT_INBOX_REPO "$repo"
+  set_conf FORKLIFT_SALT "$salt"
   echo "forklift inbox configured: $repo"
   [ -n "$salt" ] && echo "salt saved locally - set the SAME salt in ~/.config/forklift/forklift.conf on the other machine."
 }

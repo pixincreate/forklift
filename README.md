@@ -67,6 +67,28 @@ a local-only string mixed into the encryption key. The salt is stored only in
 gist is exposed, it cannot be decrypted without the salt. Set the same salt on
 both machines.
 
+### Command install (optional)
+
+By default the installer also drops the `/forklift` OpenCode command into
+`~/.config/opencode/commands`. If you manage commands yourself (for example
+through `skillset` + `capsync` across harnesses), skip it:
+
+```sh
+FORKLIFT_INSTALL_COMMAND=0 bash scripts/install.sh --clone
+# or, for npm:
+FORKLIFT_INSTALL_COMMAND=0 npm install -g github:pixincreate/forklift
+```
+
+To install the command into several harness command dirs at once, add a
+space- or comma-separated list to `~/.config/forklift/forklift.conf`:
+
+```
+FORKLIFT_COMMAND_PATHS="/home/you/.config/opencode/commands /home/you/.claude/commands"
+```
+
+`forklift init` preserves this line if you re-run it. Re-running the installer
+after editing the conf applies the new paths.
+
 ## Usage
 
 On the source machine:
