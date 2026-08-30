@@ -83,11 +83,12 @@ install_commands() {
   [ -f "$src" ] || src="$repo_dir/commands/forklift.md"
   [ -f "$src" ] || { log "command template not found, skipping"; return 0; }
   local dirs="${FORKLIFT_COMMAND_PATHS:-$oc_cmd_dir}"
-  local d
+  local d action="cp -f"
+  [ "$mode" = "clone" ] && action="ln -sf"
   for d in ${dirs//,/ }; do
     [ -z "$d" ] && continue
     mkdir -p "$d"
-    cp "$src" "$d/forklift.md"
+    $action "$src" "$d/forklift.md"
     log "Installed command to $d/forklift.md"
   done
 }
