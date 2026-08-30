@@ -60,7 +60,7 @@ bin_target="$bin_dir/forklift"
 # Best-effort: read the user's forklift.conf for command-install options.
 forklift_conf="${XDG_CONFIG_HOME:-$home_dir/.config}/forklift/forklift.conf"
 # shellcheck source=/dev/null
-[ -r "$forklift_conf" ] && . "$forklift_conf" 2>/dev/null || true
+if [ -r "$forklift_conf" ]; then . "$forklift_conf" 2>/dev/null || true; fi
 
 log() { printf '%s\n' "$*"; }
 require_command() {
