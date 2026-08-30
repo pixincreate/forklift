@@ -1,0 +1,34 @@
+{
+  "name": "forklift",
+  "version": "0.1.0",
+  "description": "move your AI session to the next machine without throwing out your back.",
+  "bin": {
+    "forklift": "scripts/forklift"
+  },
+  "files": [
+    "scripts/forklift",
+    "scripts/postinstall.js",
+    "commands/forklift.md",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pixincreate/forklift.git"
+  },
+  "homepage": "https://github.com/pixincreate/forklift",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "opencode",
+    "session",
+    "fork",
+    "txcript",
+    "claude-code",
+    "codex"
+  ]
+}
