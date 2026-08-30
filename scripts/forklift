@@ -1,0 +1,382 @@
+#!/usr/bin/env bash
+# forklift - fork an OpenCode session to another machine (and optionally another harness).
+#
+# Transport: an inbox holds a gpg-encrypted txcript "Simple" document.
+# Default inbox = GitHub Gist (secret by default, no repo). A local-only
+# FORKLIFT_SALT (set in forklift.conf during `init`) is mixed into the gpg
+# passphrase so the inbox alone cannot decrypt a blob. The code you carry is
+# the locator; the salt never leaves your machine.
+#
+# Nothing is written to disk in plaintext: the export is piped straight into
+# gpg and straight into the inbox (gh API / git / gist). On receive the blob is
+# piped straight into gpg and into `txcript continue -`.
+#
+# Sourceable for tests: `source forklift` exposes the functions; the CLI only
+# runs when executed directly (see the guard at the bottom).
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/forklift"
+CONFIG_FILE="$CONFIG_DIR/forklift.conf"
+TXCRIPT="${TXCRIPT:-txcript}"
+
+die() { echo "forklift: $*" >&2; exit 1; }
+
+# ---- config ----------------------------------------------------------------
+# Backend is inferred from FORKLIFT_INBOX_REPO:
+#   unset / "gist"        -> GitHub Gist (default; no repo, secret by default)
+#   owner/name            -> GitHub repo via the gh API
+#   any git URL           -> any git remote (self-hosted, no GitHub)
+# A local-only FORKLIFT_SALT (set during `init`) is mixed into the gpg
+# passphrase so the inbox alone cannot decrypt a blob without it.
+load_config() {
+  # shellcheck disable=SC1090  # config path is dynamic by design
+  [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+  local v="${FORKLIFT_INBOX_REPO:-}"
+  if [ "$v" = "gist" ] || [ -z "$v" ]; then
+    FORKLIFT_BACKEND="gist"
+  elif printf '%s' "$v" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+    FORKLIFT_BACKEND="gh"
+  else
+    FORKLIFT_BACKEND="git"
+  fi
+}
+
+is_gist() { [ "${FORKLIFT_BACKEND:-gist}" = "gist" ]; }
+is_gh()   { [ "${FORKLIFT_BACKEND:-}" = "gh" ]; }
+
+ensure_repo() {
+  if is_gist; then
+    gh auth status >/dev/null 2>&1 || die "gist backend needs 'gh' logged in - run: gh auth login"
+    return 0
+  fi
+  [ -n "${FORKLIFT_INBOX_REPO:-}" ] || die "no inbox repo configured - run: forklift init"
+}
+
+# gpg passphrase = the per-blob token, mixed with the local-only salt.
+passphrase_for() { printf '%s%s' "$1" "${FORKLIFT_SALT:-}"; }
+
+init() {
+  mkdir -p "$CONFIG_DIR"
+  load_config
+  local repo="${FORKLIFT_INBOX_REPO:-}" salt=""
+  if [ -z "$repo" ] || [ "$repo" = "gist" ]; then
+    gh auth status >/dev/null 2>&1 || die "gist backend needs 'gh' logged in - run: gh auth login"
+    repo="gist"
+    echo "Using GitHub Gist as the inbox (secret by default, no repo, auto-cleaned)."
+  else
+    if is_gh; then
+      if ! gh repo view "$repo" >/dev/null 2>&1; then
+        gh repo create "$repo" --private -y || die "could not create repo $repo (logged in to gh?)"
+      fi
+    fi
+  fi
+  printf 'Salt (optional, local-only secret so the inbox cannot decrypt without it): ' >&2
+  read -r salt
+  {
+    printf 'FORKLIFT_INBOX_REPO="%s"\n' "$repo"
+    [ -n "$salt" ] && printf 'FORKLIFT_SALT="%s"\n' "$salt"
+  } > "$CONFIG_FILE"
+  echo "forklift inbox configured: $repo"
+  [ -n "$salt" ] && echo "salt saved locally - set the SAME salt in ~/.config/forklift/forklift.conf on the other machine."
+}
+
+# ---- cryptography ----------------------------------------------------------
+new_token() { openssl rand -hex 6; }
+
+encrypt_stream() {
+  gpg --batch --yes --pinentry-mode loopback --symmetric --cipher-algo AES256 \
+    --passphrase "$1" 2>/dev/null
+}
+
+decrypt_stream() {
+  gpg --batch --yes --pinentry-mode loopback --decrypt --passphrase "$1" 2>/dev/null
+}
+
+# ---- session discovery -----------------------------------------------------
+latest_id() {
+  local from="$1" id
+  id="$("$TXCRIPT" list --from "$from" 2>/dev/null | sed -n '2p' | awk '{print $1}')"
+  [ -n "$id" ] || die "no $from sessions found to fork"
+  printf '%s' "$id"
+}
+
+session_title() {
+  local id="$1" from="$2"
+  "$TXCRIPT" list --from "$from" 2>/dev/null \
+    | awk -v id="$id" '$1==id {for(i=2;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":"\n"); exit}'
+}
+
+# ---- inbox backends --------------------------------------------------------
+# store_blob <token> <message>  : reads the ENCRYPTED stream from stdin. For
+#                                  gist it echoes the gist id (the locator).
+# fetch_blob <locator>          : writes the ENCRYPTED stream to stdout.
+# remove_blob <locator>         : deletes the blob from the inbox.
+
+gh_store() {
+  local token="$1" msg="$2" b64
+  b64="$(base64 | tr -d '\n')"
+  gh api "repos/$FORKLIFT_INBOX_REPO/contents/forklift/$token.gpg" \
+    --method PUT -f "message=$msg" -f "content=$b64" >/dev/null
+}
+
+gh_fetch() {
+  local token="$1"
+  gh api "repos/$FORKLIFT_INBOX_REPO/contents/forklift/$token.gpg" --jq '.content' \
+    | tr -d '\n' | base64 -d
+}
+
+gh_remove() {
+  local token="$1" sha
+  sha="$(gh api "repos/$FORKLIFT_INBOX_REPO/contents/forklift/$token.gpg" --jq '.sha' 2>/dev/null)"
+  [ -n "$sha" ] || return 0
+  gh api "repos/$FORKLIFT_INBOX_REPO/contents/forklift/$token.gpg" --method DELETE \
+    -f "message=forklift: pulled $token - removed from inbox" -f "sha=$sha" >/dev/null 2>&1 \
+    || echo "forklift: warning - could not clean inbox (push failed)"
+}
+
+git_store() {
+  local token="$1" msg="$2" tmp blob tree commit
+  tmp="$(mktemp -d)"
+  git init -q "$tmp"
+  git -C "$tmp" remote add origin "$FORKLIFT_INBOX_REPO"
+  blob="$(git -C "$tmp" hash-object -w --stdin)"   # reads the encrypted stream from stdin
+  git -C "$tmp" fetch -q origin </dev/null 2>/dev/null || true
+  export GIT_INDEX_FILE="$tmp/index"
+  if git -C "$tmp" rev-parse origin/master >/dev/null 2>&1; then
+    git -C "$tmp" read-tree origin/master
+  fi
+  git -C "$tmp" update-index --add --cacheinfo "100644,$blob,forklift/$token.gpg"
+  tree="$(git -C "$tmp" write-tree)"
+  if git -C "$tmp" rev-parse origin/master >/dev/null 2>&1; then
+    commit="$(git -C "$tmp" -c user.name=forklift -c user.email=forklift@local \
+      commit-tree "$tree" -p "$(git -C "$tmp" rev-parse origin/master)" -m "$msg")"
+  else
+    commit="$(git -C "$tmp" -c user.name=forklift -c user.email=forklift@local \
+      commit-tree "$tree" -m "$msg")"
+  fi
+  git -C "$tmp" push -q origin "$commit:refs/heads/master" </dev/null 2>/dev/null \
+    || die "push to inbox failed (check access / network)"
+  unset GIT_INDEX_FILE
+  rm -r "$tmp"
+}
+
+git_fetch() {
+  local token="$1" tmp
+  tmp="$(mktemp -d)"
+  git init -q "$tmp"
+  git -C "$tmp" remote add origin "$FORKLIFT_INBOX_REPO"
+  git -C "$tmp" fetch -q origin </dev/null 2>/dev/null || true
+  git -C "$tmp" cat-file -p "origin/master:forklift/$token.gpg" 2>/dev/null || true
+  rm -r "$tmp"
+}
+
+git_remove() {
+  local token="$1" tmp tree commit
+  tmp="$(mktemp -d)"
+  git init -q "$tmp"
+  git -C "$tmp" remote add origin "$FORKLIFT_INBOX_REPO"
+  git -C "$tmp" fetch -q origin </dev/null 2>/dev/null || die "fetch failed"
+  export GIT_INDEX_FILE="$tmp/index"
+  git -C "$tmp" read-tree origin/master
+  git -C "$tmp" update-index --remove "forklift/$token.gpg" 2>/dev/null || true
+  tree="$(git -C "$tmp" write-tree)"
+  commit="$(git -C "$tmp" -c user.name=forklift -c user.email=forklift@local \
+    commit-tree "$tree" -p "$(git -C "$tmp" rev-parse origin/master)" -m "forklift: pulled $token - removed from inbox")"
+  git -C "$tmp" push -q origin "$commit:refs/heads/master" </dev/null 2>/dev/null \
+    || echo "forklift: warning - could not clean inbox (push failed)"
+  unset GIT_INDEX_FILE
+  rm -r "$tmp"
+}
+
+gist_store() {
+  local token="$1" msg="$2" b64 url gid
+  b64="$(base64 | tr -d '\n')"
+  url="$(gh gist create --desc "forklift: ${msg#forklift: }" --filename forklift.gpg.b64 - <<<"$b64" 2>/dev/null)" \
+    || die "gist create failed (logged in to gh?)"
+  gid="$(printf '%s' "$url" | sed -E 's#.*/##')"
+  [ -n "$gid" ] || die "could not parse gist id"
+  printf '%s' "$gid"
+}
+
+gist_fetch() {
+  local locator="$1"
+  # `gh gist view` prints the description as a header, so fetch the file
+  # content directly via the API (keyed by the fixed filename).
+  gh api "gists/$locator" --jq '.files."forklift.gpg.b64".content' 2>/dev/null | base64 -d
+}
+
+gist_remove() {
+  local locator="$1"
+  gh gist delete --yes "$locator" >/dev/null 2>&1 \
+    || echo "forklift: warning - could not clean inbox (delete failed)"
+}
+
+store_blob()  { if is_gist; then gist_store "$@";  elif is_gh; then gh_store "$@";  else git_store "$@";  fi; }
+fetch_blob()  { if is_gist; then gist_fetch "$@";  elif is_gh; then gh_fetch "$@";  else git_fetch "$@";  fi; }
+remove_blob() { if is_gist; then gist_remove "$@"; elif is_gh; then gh_remove "$@"; else git_remove "$@"; fi; }
+
+# List the tokens (blob names without .gpg) currently in the inbox.
+gh_list() {
+  gh api "repos/$FORKLIFT_INBOX_REPO/contents/forklift" --jq '.[].name' 2>/dev/null \
+    | sed 's/\.gpg$//'
+}
+
+git_list() {
+  local tmp
+  tmp="$(mktemp -d)"
+  git init -q "$tmp"
+  git -C "$tmp" remote add origin "$FORKLIFT_INBOX_REPO"
+  git -C "$tmp" fetch -q origin </dev/null 2>/dev/null || true
+  git -C "$tmp" ls-tree -r --name-only origin/master 2>/dev/null | sed -n 's#^forklift/##; s/\.gpg$//p'
+  rm -r "$tmp"
+}
+
+list_tokens() { if is_gh; then gh_list; else git_list; fi; }
+
+# Title stored in the encrypted payload's first line; token doubles as the
+# passphrase half (the salt makes the full passphrase).
+blob_title() {
+  local token="$1" doc meta_line
+  doc="$(fetch_blob "$token" 2>/dev/null | decrypt_stream "$(passphrase_for "$token")" 2>/dev/null)" || return 1
+  [ -n "$doc" ] || return 1
+  meta_line="$(printf '%s\n' "$doc" | sed -n '1p')"
+  printf '%s' "$meta_line" | jq -r '.title // "untitled"'
+}
+
+# ---- commands --------------------------------------------------------------
+cmd_send() {
+  local file="" from="opencode" id=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file) file="$2"; shift 2;;
+      --from) from="$2"; shift 2;;
+      *) id="${id:-$1}"; shift;;
+    esac
+  done
+  load_config
+  ensure_repo
+  local title session_id
+  if [ -n "$file" ]; then
+    [ -f "$file" ] || die "no such file: $file"
+    title="$(jq -r '.title // "untitled session"' "$file")"
+    session_id="$(jq -r '.id // "file"' "$file")"
+  else
+    [ -z "$id" ] && id="$(latest_id "$from")"
+    title="$(session_title "$id" "$from")"
+    session_id="$id"
+  fi
+  local commit branch machine token pass meta_json msg locator code
+  commit="$(git rev-parse HEAD 2>/dev/null || echo none)"
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none)"
+  machine="$(hostname 2>/dev/null || echo unknown)"
+  token="$(new_token)"
+  pass="$(passphrase_for "$token")"
+  meta_json="$(printf '{"title":%s,"sessionId":%s,"gitCommit":%s,"gitBranch":%s,"machine":%s}' \
+    "$(printf '%s' "$title" | jq -R .)" \
+    "$(printf '%s' "$session_id" | jq -R .)" \
+    "$(printf '%s' "$commit" | jq -R .)" \
+    "$(printf '%s' "$branch" | jq -R .)" \
+    "$(printf '%s' "$machine" | jq -R .)")"
+  msg="$(printf 'forklift: %s (%s)' "$title" "$session_id")"
+  # export -> prepend meta line -> gpg encrypt (token + local salt) -> store. No plaintext on disk.
+  if [ -n "$file" ]; then
+    locator="$( { printf '%s\n' "$meta_json"; cat "$file"; } | encrypt_stream "$pass" | store_blob "$token" "$msg" )"
+  else
+    locator="$( { printf '%s\n' "$meta_json"; "$TXCRIPT" export "$id" --from "$from"; } \
+      | encrypt_stream "$pass" | store_blob "$token" "$msg" )"
+  fi
+  if [ -n "$locator" ]; then code="${locator}.${token}"; else code="$token"; fi
+  echo
+  echo "Forked: $title ($session_id)"
+  echo "code:  $code"
+  echo "On the other machine, run:"
+  echo "  forklift receive $code [<harness>]"
+}
+
+cmd_receive() {
+  local code="$1" harness="${2:-opencode}" doc meta_line meta_commit cur
+  [ -n "$code" ] || die "usage: forklift receive <code> [<harness>]"
+  load_config
+  ensure_repo
+  local locator="$code" token="$code" pass
+  if is_gist; then
+    locator="${code%%.*}"
+    token="${code#*.}"
+  fi
+  pass="$(passphrase_for "$token")"
+  doc="$(fetch_blob "$locator" 2>/dev/null | decrypt_stream "$pass" 2>/dev/null)" || true
+  [ -n "$doc" ] || die "no fork found for code $code (wrong code, or it was never sent)"
+  meta_line="$(printf '%s\n' "$doc" | sed -n '1p')"
+  printf '%s\n' "$doc" | tail -n +2 | "$TXCRIPT" continue - --with "$harness" --no-resume \
+    || die "txcript continue failed"
+  meta_commit="$(printf '%s' "$meta_line" | jq -r '.gitCommit // "none"')"
+  cur="$(git rev-parse HEAD 2>/dev/null || echo none)"
+  echo
+  if [ "$meta_commit" = "none" ] || [ "$cur" = "none" ]; then
+    echo "NOTE: git state unknown on one side - forked anyway"
+  elif [ "$meta_commit" != "$cur" ]; then
+    echo "WARN: session was at $meta_commit, you are at $cur - forked anyway"
+  else
+    echo "OK: git $cur match"
+  fi
+  remove_blob "$locator" || true
+  echo "Forked session into $harness. Inbox cleaned."
+}
+
+cmd_search() {
+  local query="$1" harness="${2:-opencode}" q
+  [ -n "$query" ] || die "usage: forklift receive search <query> [<harness>]"
+  load_config
+  ensure_repo
+  is_gist && die "search needs a repo/git inbox (FORKLIFT_INBOX_REPO). With gist, use the code printed at send."
+  local n=0; local tokens=(); local titles=()
+  q="$(printf '%s' "$query" | tr '[:upper:]' '[:lower:]')"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    local title; title="$(blob_title "$t" 2>/dev/null)" || continue
+    case "$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]')" in
+      *"$q"*) n=$((n+1)); tokens[n]="$t"; titles[n]="$title";;
+    esac
+  done < <(list_tokens)
+  [ "$n" -gt 0 ] || die "no fork matching '$query'"
+  echo "Matching forks:"
+  local i=1
+  while [ "$i" -le "$n" ]; do
+    printf '  %d) %s  [code: %s]\n' "$i" "${titles[$i]}" "${tokens[$i]}"
+    i=$((i+1))
+  done
+  printf 'Select [1-%d]: ' "$n" >&2
+  local sel
+  read -r sel
+  case "$sel" in
+    ''|*[!0-9]*) die "invalid selection";;
+  esac
+  [ "$sel" -ge 1 ] && [ "$sel" -le "$n" ] || die "selection out of range"
+  cmd_receive "${tokens[$sel]}" "$harness"
+}
+
+usage() {
+  echo "forklift - fork an OpenCode session across machines"
+  echo ""
+  echo "  forklift init                                          configure the inbox (writes ~/.config/forklift/forklift.conf)"
+  echo "  forklift send [--from <harness>] [--file <doc.json>]   export latest (or given) session to the inbox"
+  echo "  forklift receive <code> [<harness>]                   fetch + decrypt + resume (default harness: opencode)"
+  echo "  forklift receive search <query> [<harness>]            fuzzy-search a repo/git inbox, pick a fork, receive it"
+  echo ""
+  echo "Inbox: GitHub Gist by default (secret). Set FORKLIFT_INBOX_REPO to owner/name"
+  echo "(gh repo) or a git URL (self-hosted). FORKLIFT_SALT in forklift.conf adds a"
+  echo "local-only secret so the inbox cannot decrypt a blob without it."
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-send}" in
+    init)    shift; init "$@";;
+    send)    shift; cmd_send "$@";;
+    receive)
+      shift
+      if [ "${1:-}" = "search" ]; then shift; cmd_search "$@";
+      else cmd_receive "${1:-}" "${2:-}"; fi;;
+    -h|--help) usage;;
+    *) die "unknown command: $1";;
+  esac
+fi
